@@ -1,0 +1,7 @@
+services:
+  postgres:
+    image: ${TEST_POSTGRES_IMAGE:-pgvector/pgvector:0.8.0-pg17}
+    ports: ["127.0.0.1:55432:5432"]
+    networks: [internal, test_access]
+networks:
+  test_access: {}

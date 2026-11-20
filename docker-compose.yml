@@ -1,0 +1,104 @@
+name: documentation-rag
+x-db-env: &db-env
+  PGHOST: postgres
+  PGDATABASE: rag
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  restart: unless-stopped
+  networks: [internal]
+  volumes: [uploads:/data]
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure .env}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:?Configure .env}
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:?Configure .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./schema.sql:/schema.sql:ro
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    networks: [internal]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d rag"]
+      interval: 5s
+      retries: 20
+  inference:
+    build: ./inference
+    restart: unless-stopped
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      EMBEDDING_MODEL: /models/bge-m3
+      RERANKER_MODEL: /models/bge-reranker-v2-m3
+      INFERENCE_CPU_THREADS: ${INFERENCE_CPU_THREADS:-2}
+      INFERENCE_BATCH_SIZE: ${INFERENCE_BATCH_SIZE:-2}
+    volumes:
+      - models:/models
+      - ./inference/main.py:/app/main.py:ro
+    networks: [internal]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 20
+  api:
+    <<: *backend
+    networks: [internal, ingress]
+    environment:
+      <<: *db-env
+      PGUSER: api_role
+      PGPASSWORD: ${API_DB_PASSWORD:?Configure .env}
+      JWT_SECRET: ${JWT_SECRET:?Configure .env}
+      INFERENCE_URL: http://inference:8001
+      LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?Run scripts/configure.py}
+      RERANK_THRESHOLD: ${RERANK_THRESHOLD:-0.5}
+      RERANK_TIMEOUT: ${RERANK_TIMEOUT:-600}
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      retries: 20
+  worker:
+    <<: *backend
+    command: [python, -m, app.ingestion.worker]
+    environment:
+      <<: *db-env
+      PGUSER: worker_role
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?Configure .env}
+      INFERENCE_URL: http://inference:8001
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      CONTEXT_PREFIX: ${CONTEXT_PREFIX:-true}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-4}
+      EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT:-900}
+    depends_on:
+      postgres: {condition: service_healthy}
+      inference: {condition: service_healthy}
+    networks: [internal, github_egress]
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:8000
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+      CHAT_REQUEST_TIMEOUT: ${CHAT_REQUEST_TIMEOUT:-1020}
+    ports: ["127.0.0.1:8501:8501"]
+    networks: [internal, ingress]
+    depends_on:
+      api: {condition: service_healthy}
+networks:
+  internal: {internal: true}
+  ingress: {}
+  github_egress: {}
+volumes:
+  postgres:
+  uploads:
+  models:

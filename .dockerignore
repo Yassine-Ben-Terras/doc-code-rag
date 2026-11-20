@@ -1,0 +1,12 @@
+.env
+.venv
+**/__pycache__
+.pytest_cache
+.git
+data
+eval/results
+docs
+*.log
+.pytest-local
+.idea
+.vscode

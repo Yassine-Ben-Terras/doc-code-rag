@@ -1,0 +1,13 @@
+# Optional NVIDIA runtime. Default deployment also works on CPU, with higher latency.
+services:
+  inference:
+    build:
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
